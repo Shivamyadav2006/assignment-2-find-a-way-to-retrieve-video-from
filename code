@@ -1,0 +1,160 @@
+import os
+import torch
+import open_clip
+import faiss
+import cv2
+import numpy as np
+from PIL import Image
+from tqdm import tqdm
+
+# ---------------------------------
+# Setup Device
+# ---------------------------------
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+print("Loading CLIP Model...")
+clip_model, _, clip_preprocess = open_clip.create_model_and_transforms(
+    "ViT-B-32", pretrained="openai"
+)
+clip_model = clip_model.to(DEVICE)
+clip_model.eval()
+
+
+# ---------------------------------
+# Frame Extraction from Video
+# ---------------------------------
+def load_video_frames(video_file, skip_rate=30):
+    capture = cv2.VideoCapture(video_file)
+    frames_list = []
+    frame_id = 0
+
+    if not capture.isOpened():
+        print(f"⚠ Unable to open: {video_file}")
+        return []
+
+    while True:
+        success, frame = capture.read()
+        if not success:
+            break
+
+        if frame_id % skip_rate == 0:
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames_list.append(Image.fromarray(rgb))
+
+        frame_id += 1
+
+    capture.release()
+    return frames_list
+
+
+# ---------------------------------
+# Image Embedding Function
+# ---------------------------------
+def generate_image_embedding(pil_image):
+    tensor = clip_preprocess(pil_image).unsqueeze(0).to(DEVICE)
+
+    with torch.no_grad():
+        features = clip_model.encode_image(tensor)
+        features /= features.norm(dim=-1, keepdim=True)
+
+    return features.cpu().numpy()
+
+
+# ---------------------------------
+# Video Embedding Function
+# ---------------------------------
+def generate_video_embedding(video_path):
+    frames = load_video_frames(video_path)
+
+    if len(frames) == 0:
+        return None
+
+    processed_frames = torch.cat(
+        [clip_preprocess(f).unsqueeze(0) for f in frames],
+        dim=0
+    ).to(DEVICE)
+
+    with torch.no_grad():
+        frame_features = clip_model.encode_image(processed_frames)
+        frame_features /= frame_features.norm(dim=-1, keepdim=True)
+
+    frame_features = frame_features.cpu().numpy()
+
+    # Average pooling across frames
+    video_feature = np.mean(frame_features, axis=0)
+
+    return video_feature
+
+
+# ---------------------------------
+# Build Database
+# ---------------------------------
+def build_video_database(folder_path):
+    all_embeddings = []
+    video_files = []
+
+    for file_name in tqdm(os.listdir(folder_path)):
+        if file_name.lower().endswith(".mp4"):
+            full_path = os.path.join(folder_path, file_name)
+            embedding = generate_video_embedding(full_path)
+
+            if embedding is not None:
+                all_embeddings.append(embedding)
+                video_files.append(full_path)
+
+    all_embeddings = np.vstack(all_embeddings).astype("float32")
+    return all_embeddings, video_files
+
+
+# ---------------------------------
+# Search Function (Cosine Similarity)
+# ---------------------------------
+def find_best_match(query_vec, faiss_index, paths, top_k=1):
+    distances, indices = faiss_index.search(query_vec, top_k)
+    return [paths[i] for i in indices[0]]
+
+
+# ---------------------------------
+# MAIN PROGRAM
+# ---------------------------------
+if __name__ == "__main__":
+
+    DATABASE_FOLDER = "database_videos"
+
+    print("Generating database embeddings...")
+    db_embeddings, db_video_paths = build_video_database(DATABASE_FOLDER)
+
+    dim = db_embeddings.shape[1]
+
+    # Using Inner Product for cosine similarity
+    faiss.normalize_L2(db_embeddings)
+    faiss_index = faiss.IndexFlatIP(dim)
+    faiss_index.add(db_embeddings)
+
+    print("\n1 → Search using Image")
+    print("2 → Search using Video")
+
+    user_choice = input("Enter choice: ")
+
+    if user_choice == "1":
+        query_img = Image.open("query/query.jpg").convert("RGB")
+        query_embedding = generate_image_embedding(query_img)
+
+    elif user_choice == "2":
+        query_embedding = generate_video_embedding("query/query.mp4")
+
+    else:
+        print("Invalid option selected.")
+        exit()
+
+    if query_embedding is None:
+        print("Invalid query input.")
+        exit()
+
+    query_embedding = query_embedding.astype("float32")
+    faiss.normalize_L2(query_embedding)
+
+    best_result = find_best_match(query_embedding, faiss_index, db_video_paths)
+
+    print("\nBest matched video:")
+    print(best_result[0])
