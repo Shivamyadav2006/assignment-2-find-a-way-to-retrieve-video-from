@@ -158,3 +158,28 @@ if __name__ == "__main__":
 
     print("\nBest matched video:")
     print(best_result[0])
+
+
+
+
+#####OUTPUT#####
+
+shivam@MacBook-Air video_retrieval % python3 main.py
+
+Loading CLIP Model...
+Generating database embeddings...
+100%|████████████████████████████| 20/20 [00:14<00:00, 1.38it/s]
+
+1 → Search using Image
+2 → Search using Video
+
+Enter choice (1 or 2): 1
+
+Processing Query...
+Mode Selected  : Image → Video Search
+Searching best match in database...
+
+📂 File Path : database_videos/sample_video.mp4
+
+shivam@MacBook-Air video_retrieval %
+
